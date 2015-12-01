@@ -18,22 +18,42 @@ func fatalf(msg string, args ...interface{}) {
 	os.Exit(2)
 }
 
+// StringArray implements flag.Value interface
+type StringArray []string
+
+func (a *StringArray) Set(s string) error {
+	msgs := strings.Split(s, ",")
+	*a = append(*a, msgs...)
+	return nil
+}
+
+func (a *StringArray) String() string {
+	return strings.Join(*a, ",")
+}
+
 func main() {
 	host := "localhost:9200"
 	indexPrefix := "logstash-"
-	msgField := "@message"
+	msgFields := StringArray{}
 	timeField := "@timestamp"
 	exclude := ""
 	size := 1000
+	poll := 1
 
 	flag.StringVar(&host, "host", host, "host and port of elasticsearch")
 	flag.StringVar(&indexPrefix, "prefix", indexPrefix, "prefix of log indexes")
-	flag.StringVar(&msgField, "message", msgField, "message field to display")
+	flag.Var(&msgFields, "message", "message fields to display")
 	flag.StringVar(&timeField, "timestamp", timeField, "timestap field to sort by")
 	flag.StringVar(&exclude, "exclude", exclude, "comma separated list of field:value pairs to exclude")
 	flag.IntVar(&size, "size", size, "number of docs to return per polling interval")
+	flag.IntVar(&poll, "poll", poll, "time in seconds to poll for new data from ES")
 
 	flag.Parse()
+
+	// If no message field is explicitly requested we will follow @message
+	if len(msgFields) == 0 {
+		msgFields = append(msgFields, "@message")
+	}
 
 	exFilter := map[string]interface{}{}
 	if len(exclude) > 0 {
@@ -91,7 +111,7 @@ func main() {
 				},
 			},
 			"size":   size,
-			"fields": []string{msgField, timeField},
+			"fields": append(msgFields, timeField),
 		})
 		if err != nil {
 			fatalf("Error creating search body: %v", err)
@@ -111,11 +131,15 @@ func main() {
 		resp.Body.Close()
 
 		hits := results["hits"].(map[string]interface{})["hits"].([]interface{})
-		for _, lineI := range hits {
-			line := lineI.(map[string]interface{})["fields"].(map[string]interface{})
+		for _, hit := range hits {
+			line := hit.(map[string]interface{})["fields"].(map[string]interface{})
 			ts := line[timeField].([]interface{})[0].(string)
 
-			fmt.Printf("%s %v\n", ts, line[msgField].([]interface{})[0])
+			fields := []string{}
+			for _, msgField := range msgFields {
+				fields = append(fields, fmt.Sprintf("%v", line[msgField].([]interface{})[0]))
+			}
+			fmt.Printf("%s %v\n", ts, fields)
 
 			lastTime, err = time.Parse(time.RFC3339Nano, ts)
 			if err != nil {
@@ -123,6 +147,6 @@ func main() {
 			}
 		}
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(time.Duration(poll) * time.Second)
 	}
 }
