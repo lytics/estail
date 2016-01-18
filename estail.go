@@ -39,6 +39,7 @@ func main() {
 	exclude := ""
 	size := 1000
 	poll := 1
+	useSSL := false
 
 	flag.StringVar(&host, "host", host, "host and port of elasticsearch")
 	flag.StringVar(&indexPrefix, "prefix", indexPrefix, "prefix of log indexes")
@@ -47,6 +48,7 @@ func main() {
 	flag.StringVar(&exclude, "exclude", exclude, "comma separated list of field:value pairs to exclude")
 	flag.IntVar(&size, "size", size, "number of docs to return per polling interval")
 	flag.IntVar(&poll, "poll", poll, "time in seconds to poll for new data from ES")
+	flag.BoolVar(&useSSL, "ssl", useSSL, "use https for URI scheme")
 
 	flag.Parse()
 
@@ -73,8 +75,16 @@ func main() {
 
 	lastTime := time.Now()
 
+	var scheme string
+	if useSSL {
+		scheme = "https"
+	} else {
+		scheme = "http"
+	}
+	rootURL := fmt.Sprintf("%s://%s", scheme, host)
+
 	for {
-		resp, err := http.Get(fmt.Sprintf("http://%s/_status", host))
+		resp, err := http.Get(fmt.Sprintf("%s/_status", rootURL))
 		if err != nil {
 			fatalf("Error contacting Elasticsearch %s: %v", host, err)
 		}
@@ -96,7 +106,7 @@ func main() {
 		sort.Strings(indices)
 		index := indices[len(indices)-1]
 
-		url := fmt.Sprintf("http://%s/%s/_search", host, index)
+		url := fmt.Sprintf("%s/%s/_search", rootURL, index)
 		req, err := json.Marshal(map[string]interface{}{
 			"filter": map[string]interface{}{
 				"and": []interface{}{
@@ -137,7 +147,9 @@ func main() {
 
 			fields := []string{}
 			for _, msgField := range msgFields {
-				fields = append(fields, fmt.Sprintf("%v", line[msgField].([]interface{})[0]))
+				if v, ok := line[msgField].([]interface{}); ok {
+					fields = append(fields, fmt.Sprintf("%v", v[0]))
+				}
 			}
 			fmt.Printf("%s %v\n", ts, fields)
 
