@@ -64,14 +64,17 @@ func main() {
 	}
 
 	exFilter := map[string]interface{}{}
-	if len(include) > 0 {
-		exFilter["bool"] = map[string]interface{}{"must": getTerms(include)}
-	}
-	if len(exclude) > 0 {
-		exFilter["not"] = map[string]interface{}{"or": getTerms(exclude)}
-	}
-	if len(exFilter) == 0 {
+	if len(include) == 0 && len(exclude) == 0 {
 		exFilter["match_all"] = map[string]interface{}{}
+	} else {
+		filter := map[string]interface{}{}
+		if len(include) > 0 {
+			filter["must"] = getTerms(include)
+		}
+		if len(exclude) > 0 {
+			filter["must_not"] = getTerms(exclude)
+		}
+		exFilter["bool"] = filter
 	}
 
 	lastTime := time.Now()
