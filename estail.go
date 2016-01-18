@@ -40,6 +40,8 @@ func main() {
 	size := 1000
 	poll := 1
 	useSSL := false
+	useSource := false
+	showID := false
 
 	flag.StringVar(&host, "host", host, "host and port of elasticsearch")
 	flag.StringVar(&indexPrefix, "prefix", indexPrefix, "prefix of log indexes")
@@ -49,6 +51,8 @@ func main() {
 	flag.IntVar(&size, "size", size, "number of docs to return per polling interval")
 	flag.IntVar(&poll, "poll", poll, "time in seconds to poll for new data from ES")
 	flag.BoolVar(&useSSL, "ssl", useSSL, "use https for URI scheme")
+	flag.BoolVar(&useSource, "source", useSource, "use _source field to output result")
+	flag.BoolVar(&showID, "id", showID, "show _id field")
 
 	flag.Parse()
 
@@ -120,8 +124,9 @@ func main() {
 					exFilter,
 				},
 			},
-			"size":   size,
-			"fields": append(msgFields, timeField),
+			"size":    size,
+			"_source": useSource,
+			"fields":  append(msgFields, timeField),
 		})
 		if err != nil {
 			fatalf("Error creating search body: %v", err)
@@ -142,16 +147,32 @@ func main() {
 
 		hits := results["hits"].(map[string]interface{})["hits"].([]interface{})
 		for _, hit := range hits {
-			line := hit.(map[string]interface{})["fields"].(map[string]interface{})
-			ts := line[timeField].([]interface{})[0].(string)
+			h, ok := hit.(map[string]interface{})
+			if !ok {
+				continue
+			}
 
-			fields := []string{}
+			fields := h["fields"].(map[string]interface{})
+			var target map[string]interface{}
+			if useSource {
+				target = h["_source"].(map[string]interface{})
+			} else {
+				target = fields
+			}
+
+			output := []string{}
+			if showID {
+				output = append(output, fmt.Sprintf("id:%v", h["_id"]))
+			}
+
 			for _, msgField := range msgFields {
-				if v, ok := line[msgField].([]interface{}); ok {
-					fields = append(fields, fmt.Sprintf("%v", v[0]))
+				if v, _ := target[msgField]; v != nil {
+					output = append(output, fmt.Sprintf("%s:%v", msgField, v))
 				}
 			}
-			fmt.Printf("%s %v\n", ts, fields)
+
+			ts := fields[timeField].([]interface{})[0].(string)
+			fmt.Printf("%s %s\n", ts, strings.Join(output, "\t"))
 
 			lastTime, err = time.Parse(time.RFC3339Nano, ts)
 			if err != nil {
