@@ -36,6 +36,7 @@ func main() {
 	indexPrefix := "logstash-"
 	msgFields := StringArray{}
 	timeField := "@timestamp"
+	include := ""
 	exclude := ""
 	size := 1000
 	poll := 1
@@ -47,6 +48,7 @@ func main() {
 	flag.StringVar(&indexPrefix, "prefix", indexPrefix, "prefix of log indexes")
 	flag.Var(&msgFields, "message", "message fields to display")
 	flag.StringVar(&timeField, "timestamp", timeField, "timestap field to sort by")
+	flag.StringVar(&include, "include", include, "comma separated list of field:value pairs to include")
 	flag.StringVar(&exclude, "exclude", exclude, "comma separated list of field:value pairs to exclude")
 	flag.IntVar(&size, "size", size, "number of docs to return per polling interval")
 	flag.IntVar(&poll, "poll", poll, "time in seconds to poll for new data from ES")
@@ -62,18 +64,13 @@ func main() {
 	}
 
 	exFilter := map[string]interface{}{}
+	if len(include) > 0 {
+		exFilter["bool"] = map[string]interface{}{"must": getTerms(include)}
+	}
 	if len(exclude) > 0 {
-		exkv := map[string]string{}
-		for _, pair := range strings.Split(exclude, ",") {
-			kv := strings.Split(pair, ":")
-			exkv[kv[0]] = kv[1]
-		}
-		terms := []map[string]interface{}{}
-		for k, v := range exkv {
-			terms = append(terms, map[string]interface{}{"terms": map[string]interface{}{k: []string{v}}})
-		}
-		exFilter["not"] = map[string]interface{}{"or": terms}
-	} else {
+		exFilter["not"] = map[string]interface{}{"or": getTerms(exclude)}
+	}
+	if len(exFilter) == 0 {
 		exFilter["match_all"] = map[string]interface{}{}
 	}
 
@@ -182,4 +179,27 @@ func main() {
 
 		time.Sleep(time.Duration(poll) * time.Second)
 	}
+}
+
+// split string and parse to terms for query filter
+func getTerms(args string) []map[string]interface{} {
+	terms := []map[string]interface{}{}
+	for k, v := range parsePairs(args) {
+		terms = append(terms, map[string]interface{}{"terms": map[string]interface{}{k: v}})
+	}
+	return terms
+}
+
+// split string and parse to key-value pairs
+func parsePairs(args string) map[string][]string {
+	exkv := map[string][]string{}
+	for _, pair := range strings.Split(args, ",") {
+		kv := strings.Split(pair, ":")
+		if _, ok := exkv[kv[0]]; ok {
+			exkv[kv[0]] = append(exkv[kv[0]], kv[1])
+		} else {
+			exkv[kv[0]] = []string{kv[1]}
+		}
+	}
+	return exkv
 }
