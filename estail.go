@@ -36,17 +36,25 @@ func main() {
 	indexPrefix := "logstash-"
 	msgFields := StringArray{}
 	timeField := "@timestamp"
+	include := ""
 	exclude := ""
 	size := 1000
 	poll := 1
+	useSSL := false
+	useSource := false
+	showID := false
 
 	flag.StringVar(&host, "host", host, "host and port of elasticsearch")
 	flag.StringVar(&indexPrefix, "prefix", indexPrefix, "prefix of log indexes")
 	flag.Var(&msgFields, "message", "message fields to display")
 	flag.StringVar(&timeField, "timestamp", timeField, "timestap field to sort by")
+	flag.StringVar(&include, "include", include, "comma separated list of field:value pairs to include")
 	flag.StringVar(&exclude, "exclude", exclude, "comma separated list of field:value pairs to exclude")
 	flag.IntVar(&size, "size", size, "number of docs to return per polling interval")
 	flag.IntVar(&poll, "poll", poll, "time in seconds to poll for new data from ES")
+	flag.BoolVar(&useSSL, "ssl", useSSL, "use https for URI scheme")
+	flag.BoolVar(&useSource, "source", useSource, "use _source field to output result")
+	flag.BoolVar(&showID, "id", showID, "show _id field")
 
 	flag.Parse()
 
@@ -56,25 +64,31 @@ func main() {
 	}
 
 	exFilter := map[string]interface{}{}
-	if len(exclude) > 0 {
-		exkv := map[string]string{}
-		for _, pair := range strings.Split(exclude, ",") {
-			kv := strings.Split(pair, ":")
-			exkv[kv[0]] = kv[1]
-		}
-		terms := []map[string]interface{}{}
-		for k, v := range exkv {
-			terms = append(terms, map[string]interface{}{"terms": map[string]interface{}{k: []string{v}}})
-		}
-		exFilter["not"] = map[string]interface{}{"or": terms}
-	} else {
+	if len(include) == 0 && len(exclude) == 0 {
 		exFilter["match_all"] = map[string]interface{}{}
+	} else {
+		filter := map[string]interface{}{}
+		if len(include) > 0 {
+			filter["must"] = getTerms(include)
+		}
+		if len(exclude) > 0 {
+			filter["must_not"] = getTerms(exclude)
+		}
+		exFilter["bool"] = filter
 	}
 
 	lastTime := time.Now()
 
+	var scheme string
+	if useSSL {
+		scheme = "https"
+	} else {
+		scheme = "http"
+	}
+	rootURL := fmt.Sprintf("%s://%s", scheme, host)
+
 	for {
-		resp, err := http.Get(fmt.Sprintf("http://%s/_status", host))
+		resp, err := http.Get(fmt.Sprintf("%s/_status", rootURL))
 		if err != nil {
 			fatalf("Error contacting Elasticsearch %s: %v", host, err)
 		}
@@ -96,7 +110,7 @@ func main() {
 		sort.Strings(indices)
 		index := indices[len(indices)-1]
 
-		url := fmt.Sprintf("http://%s/%s/_search", host, index)
+		url := fmt.Sprintf("%s/%s/_search", rootURL, index)
 		req, err := json.Marshal(map[string]interface{}{
 			"filter": map[string]interface{}{
 				"and": []interface{}{
@@ -110,8 +124,9 @@ func main() {
 					exFilter,
 				},
 			},
-			"size":   size,
-			"fields": append(msgFields, timeField),
+			"size":    size,
+			"_source": useSource,
+			"fields":  append(msgFields, timeField),
 		})
 		if err != nil {
 			fatalf("Error creating search body: %v", err)
@@ -132,14 +147,32 @@ func main() {
 
 		hits := results["hits"].(map[string]interface{})["hits"].([]interface{})
 		for _, hit := range hits {
-			line := hit.(map[string]interface{})["fields"].(map[string]interface{})
-			ts := line[timeField].([]interface{})[0].(string)
-
-			fields := []string{}
-			for _, msgField := range msgFields {
-				fields = append(fields, fmt.Sprintf("%v", line[msgField].([]interface{})[0]))
+			h, ok := hit.(map[string]interface{})
+			if !ok {
+				continue
 			}
-			fmt.Printf("%s %v\n", ts, fields)
+
+			fields := h["fields"].(map[string]interface{})
+			var target map[string]interface{}
+			if useSource {
+				target = h["_source"].(map[string]interface{})
+			} else {
+				target = fields
+			}
+
+			output := []string{}
+			if showID {
+				output = append(output, fmt.Sprintf("id:%v", h["_id"]))
+			}
+
+			for _, msgField := range msgFields {
+				if v, _ := target[msgField]; v != nil {
+					output = append(output, fmt.Sprintf("%s:%v", msgField, v))
+				}
+			}
+
+			ts := fields[timeField].([]interface{})[0].(string)
+			fmt.Printf("%s %s\n", ts, strings.Join(output, "\t"))
 
 			lastTime, err = time.Parse(time.RFC3339Nano, ts)
 			if err != nil {
@@ -149,4 +182,27 @@ func main() {
 
 		time.Sleep(time.Duration(poll) * time.Second)
 	}
+}
+
+// split string and parse to terms for query filter
+func getTerms(args string) []map[string]interface{} {
+	terms := []map[string]interface{}{}
+	for k, v := range parsePairs(args) {
+		terms = append(terms, map[string]interface{}{"terms": map[string]interface{}{k: v}})
+	}
+	return terms
+}
+
+// split string and parse to key-value pairs
+func parsePairs(args string) map[string][]string {
+	exkv := map[string][]string{}
+	for _, pair := range strings.Split(args, ",") {
+		kv := strings.Split(pair, ":")
+		if _, ok := exkv[kv[0]]; ok {
+			exkv[kv[0]] = append(exkv[kv[0]], kv[1])
+		} else {
+			exkv[kv[0]] = []string{kv[1]}
+		}
+	}
+	return exkv
 }
