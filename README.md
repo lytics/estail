@@ -1,4 +1,5 @@
 # estail
+**moved to** https://github.com/lytics/escp/tree/master/cmd/estail
 
 estail is tailing tool for Elasticsearch
 
